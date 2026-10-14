@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    match /artifacts/sfibbank/public/data {
+
+      function profile() {
+        return get(/databases/$(db)/documents/artifacts/sfibbank/public/data/admin_users/$(request.auth.uid));
+      }
+      function isStaff() {
+        return request.auth != null
+          && exists(/databases/$(db)/documents/artifacts/sfibbank/public/data/admin_users/$(request.auth.uid));
+      }
+      function isSuper() { return isStaff() && profile().data.role == 'superadmin'; }
+
+      match /donors/{id} {
+        allow read: if isStaff();
+        allow create: if isStaff() && request.resource.data.registeredBy == request.auth.uid;
+        allow update, delete: if isSuper();
+      }
+      match /emergency_contacts/{id} {
+        allow read: if isStaff();
+        allow write: if isSuper();
+      }
+      match /admin_users/{uid} {
+        allow read: if request.auth != null && (request.auth.uid == uid || isSuper());
+        allow write: if isSuper();
+      }
+      // Plain-text login vault: superadmins ONLY
+      match /admin_credentials/{uid} {
+        allow read, write: if isSuper();
+      }
+      match /admin_logs/{id} {
+        allow read: if isSuper();
+        allow create: if isStaff();
+        allow update, delete: if false;
+      }
+    }
+  }
+}
