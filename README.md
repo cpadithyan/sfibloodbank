@@ -1,4 +1,4 @@
-# RedConnect (rebuild)
+# Red Connect (rebuild)
 1. `npm install`
 2. Web config is already filled in `src/firebase.js`
 3. Firebase Console > Authentication > Sign-in method: enable **Email/Password**

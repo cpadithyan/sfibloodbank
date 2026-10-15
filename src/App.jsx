@@ -4,7 +4,7 @@ import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, creat
 import { collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, db, firebaseConfig } from './firebase';
 
-const APP_NAME = 'RedConnect';
+const APP_NAME = 'Red Connect';
 const BASE = ['artifacts', 'sfibbank', 'public', 'data'];
 const col = (n) => collection(db, ...BASE, n);
 const ref = (n, id) => doc(db, ...BASE, n, id);
@@ -62,9 +62,50 @@ const PATHS = {
   plus: <path d="M12 5v14M5 12h14" />,
   menu: <path d="M4 6h16M4 12h16M4 18h16" />,
   chevron: <path d="m9 6 6 6-6 6" />,
+  download: <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />,
   edit: <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />,
 };
 const Icon = ({ n }) => <svg className="ic" viewBox="0 0 24 24" aria-hidden="true">{PATHS[n]}</svg>;
+
+const installHelp = (isIOS) => (isIOS
+  ? 'In Safari, tap the Share button, then choose Add to Home Screen.'
+  : 'Open your browser menu and choose Install app or Add to Home screen.');
+
+function useInstall() {
+  const [evt, setEvt] = useState(() => window.__bip || null);
+  const [installed, setInstalled] = useState(() => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true);
+  useEffect(() => {
+    const onPrompt = (e) => { e.preventDefault(); setEvt(e); };
+    const onInstalled = () => { setInstalled(true); setEvt(null); };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => { window.removeEventListener('beforeinstallprompt', onPrompt); window.removeEventListener('appinstalled', onInstalled); };
+  }, []);
+  const install = async () => { if (!evt) return; evt.prompt(); await evt.userChoice.catch(() => {}); setEvt(null); window.__bip = null; };
+  return { canInstall: !!evt, installed, isIOS: /iphone|ipad|ipod/i.test(navigator.userAgent), install };
+}
+
+function InstallBanner({ pwa }) {
+  const [hidden, setHidden] = useState(() => { try { return localStorage.getItem('rc_install_hide') === '1'; } catch { return false; } });
+  const [help, setHelp] = useState(false);
+  if (pwa.installed || hidden) return null;
+  const hide = () => { try { localStorage.setItem('rc_install_hide', '1'); } catch { /* ignore */ } setHidden(true); };
+  return (
+    <div className="card install">
+      <div className="install-row">
+        <div className="logo tile"><img src="/logo-mark.png" alt="" /></div>
+        <div className="grow"><b>Install {APP_NAME}</b><div className="muted">Open it from your home screen like an app</div></div>
+        <button type="button" className="iconbtn" aria-label="Dismiss" onClick={hide}><Icon n="x" /></button>
+      </div>
+      <button type="button" className="btn sm full" onClick={() => (pwa.canInstall ? pwa.install() : setHelp(!help))}><Icon n="download" />Install app</button>
+      {help && !pwa.canInstall && <p className="note">{installHelp(pwa.isIOS)}</p>}
+    </div>
+  );
+}
+
+const Splash = () => (
+  <div className="splash"><img src="/logo.png" alt={APP_NAME} /><div className="splash-bar"><i /></div></div>
+);
 
 const Msg = ({ m }) => (m ? <div className={'msg ' + m.type}><Icon n={m.type === 'ok' ? 'check' : 'alert'} />{m.text}</div> : null);
 
@@ -76,7 +117,7 @@ function useCol(name) {
 const log = (me, action, targetId, targetName) =>
   addDoc(col('admin_logs'), { action, adminName: me.name, targetId, targetName, timestamp: new Date().toISOString() });
 
-function Login({ error }) {
+function Login({ error, pwa }) {
   const [u, setU] = useState('');
   const [p, setP] = useState('');
   const [err, setErr] = useState('');
@@ -90,14 +131,14 @@ function Login({ error }) {
   return (
     <form className="login" onSubmit={go}>
       <div className="card form">
-        <div className="logo"><Icon n="drop" /></div>
-        <h2>{APP_NAME}</h2>
+        <img className="login-logo" src="/logo.png" alt={APP_NAME} />
         <p className="muted">Authorised organisers only</p>
         <label className="f"><span>Username</span><input autoCapitalize="none" autoCorrect="off" value={u} onChange={(e) => setU(e.target.value)} /></label>
         <label className="f"><span>Password</span><input type="password" value={p} onChange={(e) => setP(e.target.value)} /></label>
         <button className="btn full">Login</button>
         {shownErr && <Msg m={{ type: 'err', text: shownErr }} />}
       </div>
+      <InstallBanner pwa={pwa} />
     </form>
   );
 }
@@ -471,6 +512,10 @@ export default function App() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState('donors');
   const [menu, setMenu] = useState(false);
+  const [help, setHelp] = useState(false);
+  const [minDone, setMinDone] = useState(false);
+  const pwa = useInstall();
+  useEffect(() => { const t = setTimeout(() => setMinDone(true), 1300); return () => clearTimeout(t); }, []);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     if (!u) { setMe(null); return setReady(true); }
@@ -480,8 +525,8 @@ export default function App() {
     setReady(true);
   }), []);
 
-  if (!ready) return <div className="loading">Loading…</div>;
-  if (!me) return <Login error={error} />;
+  if (!ready || !minDone) return <Splash />;
+  if (!me) return <Login error={error} pwa={pwa} />;
   const isSuper = me.role === 'superadmin';
   const go = (t) => { setTab(t); setMenu(false); window.scrollTo(0, 0); };
   const items = [['emergency', 'pulse', 'Emergency contacts'], ...(isSuper ? [['admins', 'users', 'Admins'], ['logs', 'list', 'Activity log']] : [])];
@@ -491,12 +536,13 @@ export default function App() {
     <>
       <header>
         <div className="brand">
-          <div className="logo"><Icon n="drop" /></div>
+          <div className="logo"><img src="/logo-mark.png" alt="" /></div>
           <div style={{ minWidth: 0 }}><b>{APP_NAME}</b><small>{me.name} · {me.role}</small></div>
         </div>
         <div className="hav">{initials(me.name)}</div>
       </header>
       <div className="wrap">
+        {tab === 'donors' && <InstallBanner pwa={pwa} />}
         {tab === 'donors' && <Donors me={me} isSuper={isSuper} />}
         {tab === 'add' && <Register />}
         {tab === 'emergency' && <Emergency isSuper={isSuper} />}
@@ -524,6 +570,15 @@ export default function App() {
                   <span className="mi"><Icon n={i} /></span>{l}<span className="chev"><Icon n="chevron" /></span>
                 </button>
               ))}
+              {!pwa.installed && (
+                <>
+                  <div className="dsec">App</div>
+                  <button className="mitem" onClick={() => (pwa.canInstall ? pwa.install() : setHelp(!help))}>
+                    <span className="mi"><Icon n="download" /></span>Install app
+                  </button>
+                  {help && !pwa.canInstall && <p className="note">{installHelp(pwa.isIOS)}</p>}
+                </>
+              )}
             </div>
             <div className="dfoot">
               <button className="btn ghost full" onClick={() => { setMenu(false); signOut(auth); }}><Icon n="logout" />Logout</button>

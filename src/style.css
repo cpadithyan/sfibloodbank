@@ -166,3 +166,23 @@ nav button.on::before{content:"";position:absolute;top:0;left:32%;right:32%;heig
 .login h2{text-align:center;font-size:22px}
 .login .muted{text-align:center}
 .loading{display:grid;place-items:center;min-height:60vh;color:var(--mut)}
+
+/* logo images */
+.logo img{height:24px;width:auto;display:block}
+.logo.tile{background:var(--red-s)}
+.login-logo{display:block;width:180px;max-width:70%;height:auto;margin:0 auto}
+
+/* splash screen */
+.splash{position:fixed;inset:0;z-index:100;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px}
+.splash img{width:min(62vw,270px);height:auto}
+.splash-bar{width:120px;height:4px;border-radius:4px;background:var(--red-s);overflow:hidden}
+.splash-bar i{display:block;height:100%;width:40%;background:var(--red);border-radius:4px;animation:rcload 1s ease-in-out infinite}
+@keyframes rcload{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+
+/* install prompt */
+.install{margin-top:12px}
+.install-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.install b{font-size:14.5px}
+.note{margin:8px 2px 0;padding:9px 11px;background:#f7f7fa;border:1px solid var(--line);border-radius:10px;font-size:13px;color:var(--mut)}
+.dlist .note{margin:4px 10px 8px}
+.wrap .install{margin-top:0}
