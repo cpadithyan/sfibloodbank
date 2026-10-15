@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, updatePassword } from 'firebase/auth';
 import { collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, db, firebaseConfig } from './firebase';
 
+const APP_NAME = 'RedConnect';
 const BASE = ['artifacts', 'sfibbank', 'public', 'data'];
 const col = (n) => collection(db, ...BASE, n);
 const ref = (n, id) => doc(db, ...BASE, n, id);
@@ -11,6 +12,7 @@ const toEmail = (u) => `${u.trim().toLowerCase()}@sfibbank.app`;
 // Firebase needs 6+ chars; old passwords can be shorter, so a fixed suffix is added behind the scenes
 const toPw = (p) => p + '@SFIB';
 const GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+const PAGE = 30;
 const waLink = (phone, text = '') => {
   const d = String(phone || '').replace(/\D/g, '');
   return `https://wa.me/${d.length === 10 ? '91' + d : d}${text ? '?text=' + encodeURIComponent(text) : ''}`;
@@ -19,7 +21,10 @@ const copy = (t) => navigator.clipboard?.writeText(t).then(() => alert('Copied')
 const placeKey = (p) => String(p || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const titleCase = (s) => String(s || '').trim().replace(/\s+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('');
-const ACTION_LABEL = { DONOR_DELETE: 'Donor deleted', ADMIN_CREATE: 'Admin created', ADMIN_REMOVE: 'Admin removed' };
+const ACTION_LABEL = {
+  DONOR_DELETE: 'Donor deleted', ADMIN_CREATE: 'Admin created', ADMIN_REMOVE: 'Admin removed',
+  ADMIN_PASSWORD: 'Password changed', ADMIN_ROLE: 'Role changed',
+};
 // unique locations taken from the donors already in the database
 const placesFrom = (donors) => {
   const m = new Map();
@@ -32,6 +37,7 @@ const placesFrom = (donors) => {
   });
   return [...m.values()].sort((a, b) => a.label.localeCompare(b.label));
 };
+const secondaryAuth = () => getAuth(getApps().find((a) => a.name === 'sec') ? getApp('sec') : initializeApp(firebaseConfig, 'sec'));
 
 /* ---------- SVG icons (no emoji) ---------- */
 const PATHS = {
@@ -54,6 +60,9 @@ const PATHS = {
   check: <path d="M20 6 9 17l-5-5" />,
   alert: <><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></>,
   plus: <path d="M12 5v14M5 12h14" />,
+  menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+  chevron: <path d="m9 6 6 6-6 6" />,
+  edit: <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />,
 };
 const Icon = ({ n }) => <svg className="ic" viewBox="0 0 24 24" aria-hidden="true">{PATHS[n]}</svg>;
 
@@ -82,7 +91,7 @@ function Login({ error }) {
     <form className="login" onSubmit={go}>
       <div className="card form">
         <div className="logo"><Icon n="drop" /></div>
-        <h2>SFIB Blood Bank</h2>
+        <h2>{APP_NAME}</h2>
         <p className="muted">Authorised organisers only</p>
         <label className="f"><span>Username</span><input autoCapitalize="none" autoCorrect="off" value={u} onChange={(e) => setU(e.target.value)} /></label>
         <label className="f"><span>Password</span><input type="password" value={p} onChange={(e) => setP(e.target.value)} /></label>
@@ -98,8 +107,11 @@ function Donors({ me, isSuper }) {
   const [q, setQ] = useState('');
   const [bg, setBg] = useState('');
   const [loc, setLoc] = useState('');
+  const [gender, setGender] = useState('');
+  const [limit, setLimit] = useState(PAGE);
 
   const locations = useMemo(() => placesFrom(donors), [donors]);
+  useEffect(() => setLimit(PAGE), [q, bg, loc, gender]);
 
   const del = async (d) => {
     if (!confirm(`Delete ${d.name}?`)) return;
@@ -108,10 +120,14 @@ function Donors({ me, isSuper }) {
   };
   const needle = q.trim().toLowerCase();
   const shown = donors
-    .filter((d) => (!bg || d.bloodGroup === bg) && (!loc || placeKey(d.place) === loc) && `${d.name} ${d.place} ${d.phone}`.toLowerCase().includes(needle))
+    .filter((d) => (!bg || d.bloodGroup === bg)
+      && (!loc || placeKey(d.place) === loc)
+      && (!gender || d.gender === gender)
+      && `${d.name} ${d.place} ${d.phone}`.toLowerCase().includes(needle))
     .sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-  const filtered = q || bg || loc;
-  const clear = () => { setQ(''); setBg(''); setLoc(''); };
+  const filtered = q || bg || loc || gender;
+  const clear = () => { setQ(''); setBg(''); setLoc(''); setGender(''); };
+  const visible = shown.slice(0, limit);
 
   return (
     <>
@@ -128,12 +144,23 @@ function Donors({ me, isSuper }) {
             ))}
           </div>
         </div>
-        <div>
-          <div className="filter-label">Location</div>
-          <select value={loc} onChange={(e) => setLoc(e.target.value)}>
-            <option value="">All locations</option>
-            {locations.map((l) => <option key={l.key} value={l.key}>{l.label} ({l.count})</option>)}
-          </select>
+        <div className="row2">
+          <div>
+            <div className="filter-label">Location</div>
+            <select value={loc} onChange={(e) => setLoc(e.target.value)}>
+              <option value="">All locations</option>
+              {locations.map((l) => <option key={l.key} value={l.key}>{l.label} ({l.count})</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="filter-label">Gender</div>
+            <select value={gender} onChange={(e) => setGender(e.target.value)}>
+              <option value="">All genders</option>
+              <option>Male</option>
+              <option>Female</option>
+              <option>Other</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -142,26 +169,29 @@ function Donors({ me, isSuper }) {
         {filtered ? <button className="linkbtn" onClick={clear}><Icon n="x" />Clear filters</button> : null}
       </div>
 
-      {shown.map((d) => (
-        <div className="card donor" key={d.id}>
-          <div className="dtop">
-            <div className="bg">{d.bloodGroup}</div>
-            <div className="grow">
-              <div className="dname">{d.name}</div>
-              <div className="meta">
-                <span><Icon n="user" />{[d.gender, d.age].filter(Boolean).join(', ')}</span>
-                {d.place && <span><Icon n="pin" />{d.place}</span>}
-              </div>
-              <div className="meta"><span><Icon n="phone" />{d.phone}</span></div>
+      {visible.map((d) => (
+        <div className="card row" key={d.id}>
+          <div className="bg">{d.bloodGroup}</div>
+          <div className="grow">
+            <div className="dname">{d.name}</div>
+            <div className="meta">
+              <span>{[d.gender, d.age].filter(Boolean).join(', ')}</span>
+              {d.place && <span><Icon n="pin" />{d.place}</span>}
             </div>
-            {isSuper && <button className="iconbtn" title="Delete donor" aria-label="Delete donor" onClick={() => del(d)}><Icon n="trash" /></button>}
+            <div className="phoneline">
+              <span><Icon n="phone" />{d.phone}</span>
+              {isSuper && <button className="iconbtn" title="Delete donor" aria-label="Delete donor" onClick={() => del(d)}><Icon n="trash" /></button>}
+            </div>
           </div>
-          <div className="acts2">
-            <a className="btn sm" href={`tel:${d.phone}`}><Icon n="phone" />Call</a>
-            <a className="btn sm wa" target="_blank" rel="noreferrer" href={waLink(d.phone)}><Icon n="chat" />WhatsApp</a>
+          <div className="qa">
+            <a className="qbtn" href={`tel:${d.phone}`} title="Call" aria-label={`Call ${d.name}`}><Icon n="phone" /></a>
+            <a className="qbtn wa" target="_blank" rel="noreferrer" href={waLink(d.phone)} title="WhatsApp" aria-label={`WhatsApp ${d.name}`}><Icon n="chat" /></a>
           </div>
         </div>
       ))}
+      {shown.length > limit && (
+        <button className="btn soft full more" onClick={() => setLimit(limit + PAGE)}>Show more ({shown.length - limit} left)</button>
+      )}
       {!shown.length && (
         <div className="card empty"><Icon n="search" /><div>No donors found</div></div>
       )}
@@ -188,35 +218,37 @@ function Register() {
     } catch (er) { setMsg({ type: 'err', text: er.message }); }
   };
   return (
-    <form className="card form" onSubmit={add}>
-      <h3 className="page-title" style={{ margin: 0 }}>Register donor</h3>
-      <label className="f"><span>Full name</span><input placeholder="Enter full name" value={f.name} onChange={set('name')} /></label>
-      <div className="row2">
-        <label className="f"><span>Age</span><input placeholder="Years" type="number" inputMode="numeric" value={f.age} onChange={set('age')} /></label>
-        <label className="f"><span>Phone</span><input placeholder="Mobile number" type="tel" inputMode="tel" value={f.phone} onChange={set('phone')} /></label>
-      </div>
-      <div>
-        <div className="filter-label">Gender</div>
-        <div className="seg">
-          {['Male', 'Female', 'Other'].map((g) => <button type="button" key={g} className={f.gender === g ? 'on' : ''} onClick={() => pick('gender', g)}>{g}</button>)}
+    <>
+      <div className="page-title">Register donor</div>
+      <form className="card form" onSubmit={add}>
+        <label className="f"><span>Full name</span><input placeholder="Enter full name" value={f.name} onChange={set('name')} /></label>
+        <div className="row2">
+          <label className="f"><span>Age</span><input placeholder="Years" type="number" inputMode="numeric" value={f.age} onChange={set('age')} /></label>
+          <label className="f"><span>Phone</span><input placeholder="Mobile number" type="tel" inputMode="tel" value={f.phone} onChange={set('phone')} /></label>
         </div>
-      </div>
-      <div>
-        <div className="filter-label">Blood group</div>
-        <div className="bgrid">
-          {GROUPS.map((g) => <button type="button" key={g} className={f.bloodGroup === g ? 'on' : ''} onClick={() => pick('bloodGroup', g)}>{g}</button>)}
+        <div>
+          <div className="flabel">Gender</div>
+          <div className="seg">
+            {['Male', 'Female', 'Other'].map((g) => <button type="button" key={g} className={f.gender === g ? 'on' : ''} onClick={() => pick('gender', g)}>{g}</button>)}
+          </div>
         </div>
-      </div>
-      <label className="f">
-        <span>Place</span>
-        <select value={f.place} onChange={set('place')} disabled={!places.length}>
-          <option value="">{places.length ? 'Select place' : 'No locations available'}</option>
-          {places.map((p) => <option key={p.key} value={p.label}>{p.label}</option>)}
-        </select>
-      </label>
-      <button className="btn full">Save donor</button>
-      <Msg m={msg} />
-    </form>
+        <div>
+          <div className="flabel">Blood group</div>
+          <div className="bgrid">
+            {GROUPS.map((g) => <button type="button" key={g} className={f.bloodGroup === g ? 'on' : ''} onClick={() => pick('bloodGroup', g)}>{g}</button>)}
+          </div>
+        </div>
+        <label className="f">
+          <span>Place</span>
+          <select value={f.place} onChange={set('place')} disabled={!places.length}>
+            <option value="">{places.length ? 'Select place' : 'No locations available'}</option>
+            {places.map((p) => <option key={p.key} value={p.label}>{p.label}</option>)}
+          </select>
+        </label>
+        <button className="btn full">Save donor</button>
+        <Msg m={msg} />
+      </form>
+    </>
   );
 }
 
@@ -243,19 +275,19 @@ function Emergency({ isSuper }) {
         </details>
       )}
       {rows.map((r) => (
-        <div className="card donor" key={r.id}>
-          <div className="person">
-            <div className="avatar em"><Icon n="pulse" /></div>
-            <div className="grow">
-              <div className="dname">{r.name}</div>
-              {r.place && <div className="meta"><span><Icon n="pin" />{r.place}</span></div>}
-              <div className="meta"><span><Icon n="phone" />{r.phone}</span></div>
+        <div className="card row" key={r.id}>
+          <div className="avatar"><Icon n="pulse" /></div>
+          <div className="grow">
+            <div className="dname">{r.name}</div>
+            {r.place && <div className="meta"><span><Icon n="pin" />{r.place}</span></div>}
+            <div className="phoneline">
+              <span><Icon n="phone" />{r.phone}</span>
+              {isSuper && <button className="iconbtn" title="Delete" aria-label="Delete contact" onClick={() => deleteDoc(ref('emergency_contacts', r.id))}><Icon n="trash" /></button>}
             </div>
-            {isSuper && <button className="iconbtn" title="Delete" aria-label="Delete contact" onClick={() => deleteDoc(ref('emergency_contacts', r.id))}><Icon n="trash" /></button>}
           </div>
-          <div className="acts2">
-            <a className="btn sm" href={`tel:${r.phone}`}><Icon n="phone" />Call</a>
-            <a className="btn sm wa" target="_blank" rel="noreferrer" href={waLink(r.phone)}><Icon n="chat" />WhatsApp</a>
+          <div className="qa">
+            <a className="qbtn" href={`tel:${r.phone}`} title="Call" aria-label={`Call ${r.name}`}><Icon n="phone" /></a>
+            <a className="qbtn wa" target="_blank" rel="noreferrer" href={waLink(r.phone)} title="WhatsApp" aria-label={`WhatsApp ${r.name}`}><Icon n="chat" /></a>
           </div>
         </div>
       ))}
@@ -272,6 +304,8 @@ function Admins({ me }) {
   const empty = { name: '', username: '', password: '', phone: '', role: 'admin', designation: '', location: '' };
   const [f, setF] = useState(empty);
   const [msg, setMsg] = useState(null);
+  const [edit, setEdit] = useState(null); // { id, role, pw }
+  const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const add = async (e) => {
@@ -281,8 +315,7 @@ function Admins({ me }) {
     if (!f.name || !username || f.password.length < 4) return setMsg({ type: 'err', text: 'Name, username and a password of 4+ characters are required' });
     try {
       // secondary app instance so the superadmin stays signed in
-      const sec = getApps().find((a) => a.name === 'sec') ? getApp('sec') : initializeApp(firebaseConfig, 'sec');
-      const secAuth = getAuth(sec);
+      const secAuth = secondaryAuth();
       const cred = await createUserWithEmailAndPassword(secAuth, toEmail(username), toPw(f.password));
       await signOut(secAuth);
       const { password, ...profile } = f;
@@ -300,7 +333,41 @@ function Admins({ me }) {
     await deleteDoc(ref('admin_credentials', a.id));
     await log(me, 'ADMIN_REMOVE', a.id, a.name);
   };
-  const text = (a) => `Hi ${a.name}, your SFIB Blood Bank login:\nUsername: ${a.username}\nPassword: ${pw[a.id]}\n${location.origin}`;
+
+  const startEdit = (a) => { setMsg(null); setEdit({ id: a.id, role: a.role || 'admin', pw: '' }); };
+  const saveEdit = async (a) => {
+    setMsg(null);
+    const isSelf = a.id === auth.currentUser.uid;
+    const roleChanged = edit.role !== a.role;
+    const newPw = edit.pw.trim();
+    if (!roleChanged && !newPw) return setEdit(null);
+    if (roleChanged && isSelf) return setMsg({ type: 'err', text: 'You cannot change your own role' });
+    if (newPw && newPw.length < 4) return setMsg({ type: 'err', text: 'New password must be 4+ characters' });
+    if (newPw && !pw[a.id]) return setMsg({ type: 'err', text: 'This admin\'s current password is not recorded, so it cannot be changed here. Use the reset-password script instead.' });
+    setBusy(true);
+    try {
+      if (newPw) {
+        // sign in as that admin on the secondary app using the stored password, then change it
+        const secAuth = secondaryAuth();
+        const cred = await signInWithEmailAndPassword(secAuth, toEmail(a.username), toPw(pw[a.id]));
+        await updatePassword(cred.user, toPw(newPw));
+        await signOut(secAuth);
+        await setDoc(ref('admin_credentials', a.id), { username: a.username, password: newPw });
+        await log(me, 'ADMIN_PASSWORD', a.id, a.name);
+      }
+      if (roleChanged) {
+        await setDoc(ref('admin_users', a.id), { role: edit.role }, { merge: true });
+        await log(me, 'ADMIN_ROLE', a.id, `${a.name} (${a.role} to ${edit.role})`);
+      }
+      setEdit(null);
+      if (newPw && isSelf) { alert('Password changed. Please log in again.'); return signOut(auth); }
+      setMsg({ type: 'ok', text: `${a.name} updated` });
+    } catch (er) {
+      setMsg({ type: 'err', text: er.code === 'auth/invalid-credential' ? 'Stored password does not match this account, so it cannot be changed here. Use the reset-password script instead.' : er.message });
+    }
+    setBusy(false);
+  };
+  const text = (a) => `Hi ${a.name}, your ${APP_NAME} login:\nUsername: ${a.username}\nPassword: ${pw[a.id]}\n${location.origin}`;
 
   return (
     <>
@@ -313,7 +380,7 @@ function Admins({ me }) {
             <label className="f"><span>Password</span><input autoCapitalize="none" value={f.password} onChange={set('password')} /></label>
           </div>
           <div className="row2">
-            <label className="f"><span>Phone (for WhatsApp)</span><input type="tel" value={f.phone} onChange={set('phone')} /></label>
+            <label className="f"><span>Phone (WhatsApp)</span><input type="tel" value={f.phone} onChange={set('phone')} /></label>
             <label className="f"><span>Role</span>
               <select value={f.role} onChange={set('role')}><option value="admin">Admin</option><option value="superadmin">Superadmin</option></select>
             </label>
@@ -326,7 +393,6 @@ function Admins({ me }) {
         </form>
       </details>
       <Msg m={msg} />
-      {msg && <div style={{ height: 12 }} />}
       {admins.map((a) => (
         <div className="card" key={a.id}>
           <div className="person">
@@ -344,16 +410,35 @@ function Admins({ me }) {
             <div><small>Username</small><b>{a.username}</b></div>
             <div><small>Password</small><b>{pw[a.id] ? (show[a.id] ? pw[a.id] : '••••••••') : 'Not recorded'}</b></div>
           </div>
-          <div className={'acts4' + (pw[a.id] ? ' n4' : '')}>
-            {pw[a.id] && (
-              <>
-                <button className="btn sm soft" onClick={() => setShow({ ...show, [a.id]: !show[a.id] })}><Icon n={show[a.id] ? 'eyeOff' : 'eye'} />{show[a.id] ? 'Hide' : 'Show'}</button>
-                <button className="btn sm soft" onClick={() => copy(text(a))}><Icon n="copy" />Copy</button>
-                <a className="btn sm wa" target="_blank" rel="noreferrer" href={waLink(a.phone, text(a))}><Icon n="chat" />Send</a>
-              </>
-            )}
-            <button className={'btn sm ghost' + (pw[a.id] ? '' : ' span2')} onClick={() => remove(a)}><Icon n="trash" />Remove</button>
-          </div>
+          {edit?.id === a.id ? (
+            <div className="editbox">
+              <label className="f"><span>Role</span>
+                <select value={edit.role} disabled={a.id === auth.currentUser.uid} onChange={(e) => setEdit({ ...edit, role: e.target.value })}>
+                  <option value="admin">Admin</option>
+                  <option value="superadmin">Superadmin</option>
+                </select>
+              </label>
+              <label className="f"><span>New password</span>
+                <input autoCapitalize="none" placeholder="Leave blank to keep current" value={edit.pw} onChange={(e) => setEdit({ ...edit, pw: e.target.value })} />
+              </label>
+              <div className="editbtns">
+                <button className="btn sm soft" disabled={busy} onClick={() => setEdit(null)}>Cancel</button>
+                <button className="btn sm" disabled={busy} onClick={() => saveEdit(a)}>{busy ? 'Saving…' : 'Save changes'}</button>
+              </div>
+            </div>
+          ) : (
+            <div className="acts5">
+              {pw[a.id] && (
+                <>
+                  <button className="btn sm soft s2" onClick={() => setShow({ ...show, [a.id]: !show[a.id] })}><Icon n={show[a.id] ? 'eyeOff' : 'eye'} />{show[a.id] ? 'Hide' : 'Show'}</button>
+                  <button className="btn sm soft s2" onClick={() => copy(text(a))}><Icon n="copy" />Copy</button>
+                  <a className="btn sm wa s2" target="_blank" rel="noreferrer" href={waLink(a.phone, text(a))}><Icon n="chat" />Send</a>
+                </>
+              )}
+              <button className="btn sm soft s3" onClick={() => startEdit(a)}><Icon n="edit" />Edit</button>
+              <button className="btn sm ghost s3" onClick={() => remove(a)}><Icon n="trash" />Remove</button>
+            </div>
+          )}
         </div>
       ))}
     </>
@@ -385,6 +470,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('donors');
+  const [menu, setMenu] = useState(false);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     if (!u) { setMe(null); return setReady(true); }
@@ -397,16 +483,18 @@ export default function App() {
   if (!ready) return <div className="loading">Loading…</div>;
   if (!me) return <Login error={error} />;
   const isSuper = me.role === 'superadmin';
-  const tabs = [['donors', 'search', 'Donors'], ['add', 'userPlus', 'Register'], ['emergency', 'pulse', 'Emergency'], ...(isSuper ? [['admins', 'users', 'Admins'], ['logs', 'list', 'Logs']] : [])];
+  const go = (t) => { setTab(t); setMenu(false); window.scrollTo(0, 0); };
+  const items = [['emergency', 'pulse', 'Emergency contacts'], ...(isSuper ? [['admins', 'users', 'Admins'], ['logs', 'list', 'Activity log']] : [])];
+  const inMenu = items.some(([k]) => k === tab);
 
   return (
     <>
       <header>
         <div className="brand">
           <div className="logo"><Icon n="drop" /></div>
-          <div style={{ minWidth: 0 }}><b>SFIB Blood Bank</b><small>{me.name} · {me.role}</small></div>
+          <div style={{ minWidth: 0 }}><b>{APP_NAME}</b><small>{me.name} · {me.role}</small></div>
         </div>
-        <button className="hbtn" onClick={() => signOut(auth)}><Icon n="logout" />Logout</button>
+        <div className="hav">{initials(me.name)}</div>
       </header>
       <div className="wrap">
         {tab === 'donors' && <Donors me={me} isSuper={isSuper} />}
@@ -415,7 +503,34 @@ export default function App() {
         {tab === 'admins' && isSuper && <Admins me={me} />}
         {tab === 'logs' && isSuper && <Logs />}
       </div>
-      <nav>{tabs.map(([k, i, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}><Icon n={i} />{l}</button>)}</nav>
+      <nav>
+        <button className={tab === 'donors' ? 'on' : ''} onClick={() => go('donors')}><Icon n="search" />Donors</button>
+        <button className={tab === 'add' ? 'on' : ''} onClick={() => go('add')}><Icon n="userPlus" />Register</button>
+        <button className={inMenu || menu ? 'on' : ''} onClick={() => setMenu(true)}><Icon n="menu" />Menu</button>
+      </nav>
+      {menu && (
+        <>
+          <div className="scrim" onClick={() => setMenu(false)} />
+          <aside className="drawer">
+            <div className="dhead">
+              <div className="hav">{initials(me.name)}</div>
+              <div style={{ minWidth: 0 }}><b>{me.name}</b><small>{me.role}</small></div>
+              <button className="dclose" aria-label="Close menu" onClick={() => setMenu(false)}><Icon n="x" /></button>
+            </div>
+            <div className="dlist">
+              <div className="dsec">More</div>
+              {items.map(([k, i, l]) => (
+                <button key={k} className={'mitem' + (tab === k ? ' on' : '')} onClick={() => go(k)}>
+                  <span className="mi"><Icon n={i} /></span>{l}<span className="chev"><Icon n="chevron" /></span>
+                </button>
+              ))}
+            </div>
+            <div className="dfoot">
+              <button className="btn ghost full" onClick={() => { setMenu(false); signOut(auth); }}><Icon n="logout" />Logout</button>
+            </div>
+          </aside>
+        </>
+      )}
     </>
   );
 }
